@@ -93,6 +93,7 @@ def test_agent_runs_precise_edit_validation_and_final_response(tmp_path):
     assert agent.state.changed_files == {"calc.py"}
     assert agent.state.commands_run
     assert logger.path.exists()
+    # Tool-call protocol is preserved in the full history.
     tool_messages = [m for m in agent.messages if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in tool_messages] == ["c1", "c2", "c3"]
 

@@ -37,6 +37,7 @@ def test_detects_short_periodic_cycle():
     for name, args in sequence:
         assert detector.check(name, args) is None
         detector.record(name, args, succeeded=True)
+    # Fifth call alone is not enough; after recording it, the sixth completes ABABAB.
     name, args = "read_file", '{"path":"a.py"}'
     assert detector.check(name, args) is None
     detector.record(name, args, succeeded=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,18 +18,19 @@ _SECRET_PATTERNS = [
 
 
 class SessionLogger:
-    """Append-only JSONL trace with conservative secret redaction."""
+    """Append-only JSONL trace with bounded fields and conservative secret redaction."""
 
     MAX_FIELD_CHARS = 50_000
 
     def __init__(self, log_dir: str | Path = "logs", *, enabled: bool = True) -> None:
         self.enabled = enabled
         self.path: Path | None = None
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_id = f"{stamp}-{uuid.uuid4().hex[:6]}"
         if enabled:
             directory = Path(log_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            self.path = directory / f"session_{stamp}.jsonl"
+            self.path = directory / f"session_{self.session_id}.jsonl"
 
     @classmethod
     def _redact_text(cls, text: str) -> str:
@@ -65,6 +67,7 @@ class SessionLogger:
             return
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self.session_id,
             "event": event,
             **self._sanitize(data),
         }

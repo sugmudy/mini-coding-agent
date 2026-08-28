@@ -18,6 +18,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Check the installed version:
+
+```bash
+python main.py --version
+```
+
 ## 2. Configure an OpenAI-compatible gateway
 
 Credentials remain outside source code. The project uses the standard environment configuration supported by the OpenAI Python SDK.
@@ -40,15 +46,15 @@ export OPENAI_API_KEY="<your OpenLux token>"
 export AGENT_MODEL="<model id>"
 ```
 
-Never store the real credential in the repository, README, screenshots, recordings, or session examples.
+Never put a real credential in the repository, README, screenshots, recordings, demo fixtures, or session examples.
 
-List models available through the configured gateway:
+List available models:
 
 ```bash
 python main.py --list-models
 ```
 
-A model may also be selected per run:
+A model can also be selected per run:
 
 ```bash
 python main.py --model MODEL_ID "Fix the failing tests"
@@ -62,13 +68,13 @@ Default workspace:
 ./workspace
 ```
 
-Or point to another local project:
+Or use another project:
 
 ```bash
 python main.py --workspace path/to/project "Fix the failing tests"
 ```
 
-All file tools resolve paths against this directory. Path traversal outside it is rejected.
+All file tools resolve paths against this directory. `../` path traversal or absolute paths that resolve outside the workspace are rejected.
 
 ## 4. Run tasks
 
@@ -81,95 +87,164 @@ python main.py
 One-shot:
 
 ```bash
-python main.py "Find the cause of the failing tests, fix it, and validate the result"
+python main.py "Inspect the project, diagnose all failing tests, make the minimum necessary fixes, and validate the final result"
 ```
 
-Useful CLI flags:
+V3 CLI options:
 
 ```text
---workspace PATH    project directory
---model MODEL_ID    override AGENT_MODEL
---max-steps N       maximum model turns (default 30)
---quiet             hide intermediate trace output
---log-dir PATH      JSONL session log directory
---no-log            disable session logging for this run
---list-models       list gateway models and exit
+--workspace PATH        project directory
+--model MODEL_ID        override AGENT_MODEL
+--max-steps N           maximum model turns (default 30)
+--safety MODE           strict | balanced | permissive
+--yes                   auto-approve review actions (never blocked actions)
+--quiet                 final answer only
+--no-color              structured terminal output without colors
+--log-dir PATH          JSONL session log directory
+--no-log                disable session logging
+--list-models           list gateway models and exit
+--version               print Mini Coding Agent version
 ```
 
-## 5. V2 tool behavior
+## 5. Tool behavior
 
-### Search first
+### Locate code first
 
-The model can call `search_files` with literal/regex queries, path scopes and file globs. Search output is bounded and includes line numbers.
+`search_files` supports literal/regex queries, path scopes and file globs. Results contain file paths and line numbers. Generated/dependency directories, large files and binary files are skipped.
 
-### Focused reads
+### Read only the relevant range
 
-`read_file` accepts optional `start_line` and `end_line`. Large files should be navigated with focused ranges rather than repeatedly loaded in full.
+`read_file` accepts `start_line` / `end_line` and returns line-numbered content plus total-line metadata. Large reads are bounded.
 
-### Precise edits
+### Prefer precise edits
 
-`edit_file` accepts an exact `old_text` and `new_text`. The old snippet must be unique. Ambiguous or missing snippets produce structured errors so the model can re-read and refine the edit. Successful edits return a unified diff.
+`edit_file(path, old_text, new_text)` requires exactly one occurrence of `old_text`. Zero or multiple matches are explicit errors; the model must re-read and refine the snippet. Successful edits return a unified diff rendered in the terminal.
 
-### Whole-file writes
+### Whole-file replacement is guarded
 
-`write_file` remains available for new files and intentional complete replacements.
+`write_file` is appropriate for new files and intentional complete rewrites. If an existing non-trivial file would shrink to less than roughly 35% of its prior size, V3 classifies the action as review-level and asks for approval in balanced mode.
 
-### Validation commands
+### Validate with local commands
 
-`run_command` uses `shell=False`, an executable allow-list, workspace `cwd`, timeout, and bounded output. Supported executables include common Python, Git, Node, Java, C/C++, CMake/Make, Cargo, and Go development commands.
+`run_command` uses `shell=False`, an executable allow-list, workspace `cwd`, timeout, output bounds, and a V3 safety classification. Test/build/run commands normally execute automatically. Package installation and mutating Git actions can require approval; destructive Git history operations are blocked.
 
-If files were changed and the model attempts to finish without running any command, V2 issues one runtime validation nudge.
+## 6. Safety modes
 
-## 6. Session logs
+### Balanced (default)
 
-By default a JSONL trace is written under `logs/`:
+```bash
+python main.py --safety balanced "Fix the project"
+```
+
+Safe commands run automatically. Review-level actions ask the user. Blocked actions never run.
+
+### Strict
+
+```bash
+python main.py --safety strict "Fix the project"
+```
+
+Both review and blocked actions are rejected. Use this when the workspace should be modified only through the explicit file tools and ordinary validation commands.
+
+### Permissive
+
+```bash
+python main.py --safety permissive "Fix the project"
+```
+
+Review-level actions run without asking, but blocked destructive/history-changing operations remain blocked.
+
+### Auto-approval
+
+```bash
+python main.py --yes "Fix the project"
+```
+
+`--yes` answers yes to review prompts. It does not disable the blocked-action policy.
+
+## 7. Terminal UI
+
+The default V3 interface uses Rich to show:
 
 ```text
-logs/session_YYYYMMDD_HHMMSS_xxxxxx.jsonl
+session metadata
+user task
+model steps
+structured tool calls
+search/read summaries
+file diffs
+command exit/output
+warnings and safety approvals
+final run report
 ```
 
-It contains events such as:
+Use `--no-color` when recording in a terminal that does not render color reliably. Use `--quiet` for automation or when only the final model answer is desired.
+
+## 8. Session traces and observability
+
+A JSONL file is written to `logs/` by default:
+
+```text
+logs/session_YYYYMMDD_HHMMSS-xxxxxx.jsonl
+```
+
+Every event carries the same session ID. Typical events include:
 
 ```text
 session_start
 llm_request
 llm_response
+context_compaction
 tool_result
 tool_blocked
 validation_nudge
 session_complete
 ```
 
-Logs are local runtime artifacts and are excluded from Git. Secret-like values are redacted conservatively. Use `--no-log` when no trace is desired.
+The runtime records LLM/tool latency, retry count, token usage when the gateway returns `usage`, tool counts, changed files, validation commands and context compactions. Logs are excluded from Git and apply conservative credential redaction.
 
-## 7. Runtime configuration
+Disable logging:
 
-The following optional environment variables tune V2 without code changes:
+```bash
+python main.py --no-log "Fix the project"
+```
+
+## 9. Optional cost estimate
+
+Token counts come from the OpenAI-compatible response when available. Because gateway/model prices vary, prices are never hard-coded. To display a local estimate in the final report, set per-million-token rates:
+
+```text
+AGENT_INPUT_PRICE_PER_MILLION
+AGENT_OUTPUT_PRICE_PER_MILLION
+```
+
+If either value is absent, the report shows token counts but not a cost estimate.
+
+## 10. Runtime configuration
 
 ```text
 AGENT_MODEL
 AGENT_WORKSPACE
-AGENT_MAX_STEPS              default 30
-AGENT_COMMAND_TIMEOUT        default 30 seconds
-AGENT_LLM_TIMEOUT            default 60 seconds
-AGENT_LLM_MAX_RETRIES        default 3
-AGENT_RETRY_BACKOFF          default 1.0 seconds
-AGENT_MAX_HISTORY_CHARS      default 160000
-AGENT_MAX_TOOL_RESULT_CHARS  default 30000
-AGENT_LOOP_REPEAT_LIMIT      default 3
-AGENT_LOG_DIR                default logs
+AGENT_MAX_STEPS                  default 30
+AGENT_COMMAND_TIMEOUT            default 30 seconds
+AGENT_LLM_TIMEOUT                default 60 seconds
+AGENT_LLM_MAX_RETRIES            default 3
+AGENT_RETRY_BACKOFF              default 1.0 seconds
+AGENT_MAX_HISTORY_CHARS          default 160000
+AGENT_MAX_TOOL_RESULT_CHARS      default 30000
+AGENT_LOOP_REPEAT_LIMIT          default 3
+AGENT_LOG_DIR                    default logs
+AGENT_SAFETY_MODE                default balanced
+AGENT_INPUT_PRICE_PER_MILLION    optional
+AGENT_OUTPUT_PRICE_PER_MILLION   optional
 ```
 
-## 8. Tests
+## 11. Tests
 
-Run the full deterministic suite:
+Run the deterministic suite:
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
-The suite does not need a live API key. For real end-to-end verification, configure the gateway and point the agent at a disposable test project, then ask it to fix failing tests.
-
-## 9. Safety note
-
-The workspace and command policies reduce accidental reach but do not provide a hardened sandbox. Run the agent on code/workspaces you are comfortable allowing local development commands to modify.
+The tests require no live API credential. For final integration validation, point the configured agent at a disposable multi-file project with failing tests and verify the real trajectory includes search, focused reads, precise edits, error-driven iteration and a passing validation command.

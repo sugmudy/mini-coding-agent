@@ -8,13 +8,16 @@ from config import Settings
 from context import ContextManager
 from llm_client import LLMClient, LLMClientError
 from loop_detector import LoopDetector
+from safety import SafetyPolicy
 from session_logger import SessionLogger
 from tools.registry import ToolRegistry
+from ui import NullUI, PlainUI, RichUI
+from version import __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="A reliable local coding agent powered by an OpenAI-compatible model gateway."
+        description="A reliable, observable local coding agent powered by an OpenAI-compatible model gateway."
     )
     parser.add_argument("task", nargs="?", help="Programming task for the agent.")
     parser.add_argument("--workspace", help="Workspace directory. Default: ./workspace")
@@ -22,16 +25,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, help="Maximum model turns. Default: 30")
     parser.add_argument("--log-dir", help="Session JSONL directory. Default: ./logs")
     parser.add_argument(
-        "--no-log", action="store_true", help="Disable local JSONL session tracing for this run."
+        "--safety",
+        choices=["strict", "balanced", "permissive"],
+        help="Safety mode. Default: AGENT_SAFETY_MODE or balanced.",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Auto-approve review-level actions. Blocked destructive actions remain blocked.",
+    )
+    parser.add_argument("--no-log", action="store_true", help="Disable local JSONL session tracing.")
+    parser.add_argument("--no-color", action="store_true", help="Disable terminal colors while keeping structured UI.")
     parser.add_argument(
         "--list-models",
         action="store_true",
         help="List model IDs available to the configured gateway and exit.",
     )
-    parser.add_argument(
-        "--quiet", action="store_true", help="Hide intermediate agent/tool trace output."
-    )
+    parser.add_argument("--quiet", action="store_true", help="Hide intermediate traces and print only the final answer.")
+    parser.add_argument("--version", action="version", version=f"Mini Coding Agent {__version__}")
     return parser
 
 
@@ -44,6 +55,7 @@ def main() -> int:
             model=args.model,
             max_steps=args.max_steps,
             log_dir=args.log_dir,
+            safety_mode=args.safety,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
@@ -85,15 +97,27 @@ def main() -> int:
             print()
             return 130
 
-    registry = ToolRegistry(settings.workspace, command_timeout=settings.command_timeout)
+    if args.quiet:
+        ui = NullUI()
+    else:
+        try:
+            ui = RichUI(no_color=args.no_color, assume_yes=args.yes)
+        except RuntimeError:
+            ui = PlainUI(enabled=True, assume_yes=args.yes)
+
+    safety_policy = SafetyPolicy(settings.safety_mode)
+    registry = ToolRegistry(
+        settings.workspace,
+        command_timeout=settings.command_timeout,
+        safety_policy=safety_policy,
+        approval_callback=ui.confirm,
+    )
     context = ContextManager(
         max_history_chars=settings.max_history_chars,
         max_tool_result_chars=settings.max_tool_result_chars,
     )
     loop_detector = LoopDetector(repeat_limit=settings.loop_repeat_limit)
     session_logger = SessionLogger(settings.log_dir, enabled=not args.no_log)
-    if session_logger.path and not args.quiet:
-        print(f"Session log: {session_logger.path}")
 
     agent = Agent(
         llm=llm,
@@ -103,6 +127,10 @@ def main() -> int:
         context_manager=context,
         loop_detector=loop_detector,
         session_logger=session_logger,
+        ui=ui,
+        workspace=settings.workspace,
+        input_price_per_million=settings.input_price_per_million,
+        output_price_per_million=settings.output_price_per_million,
     )
 
     try:
@@ -114,8 +142,8 @@ def main() -> int:
         print(f"Agent error: {exc}", file=sys.stderr)
         return 1
 
-    print("\n=== Final Answer ===")
-    print(final or "(empty response)")
+    if args.quiet:
+        print(final or "(empty response)")
     return 0
 
 

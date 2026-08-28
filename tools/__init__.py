@@ -1,1 +1,1 @@
-"""Local tools exposed to the coding agent."""
+"""Local tool implementations for the coding agent."""

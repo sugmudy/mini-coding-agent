@@ -40,6 +40,7 @@ class LoopDetector:
         )
         same_generation = [item for item in self._history if item.generation == self._generation]
 
+        # Exact repetition (AAA).
         if len(same_generation) >= self.repeat_limit - 1:
             tail = same_generation[-(self.repeat_limit - 1) :]
             if all(item.name == signature.name and item.arguments == signature.arguments for item in tail):
@@ -49,6 +50,7 @@ class LoopDetector:
                     "Use existing observations, refine the arguments, or take a different action."
                 )
 
+        # Short periodic cycles such as A,B,A,B,A,B or A,B,C repeated.
         candidate = same_generation + [signature]
         for period in (2, 3):
             needed = period * 3

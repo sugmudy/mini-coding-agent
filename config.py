@@ -18,6 +18,9 @@ class Settings:
     max_tool_result_chars: int
     loop_repeat_limit: int
     log_dir: Path
+    safety_mode: str
+    input_price_per_million: float | None
+    output_price_per_million: float | None
 
     @classmethod
     def from_env(
@@ -27,6 +30,7 @@ class Settings:
         model: str | None = None,
         max_steps: int | None = None,
         log_dir: str | Path | None = None,
+        safety_mode: str | None = None,
     ) -> "Settings":
         selected_model = model or os.getenv("AGENT_MODEL") or None
         selected_workspace = Path(workspace or os.getenv("AGENT_WORKSPACE", "workspace"))
@@ -44,6 +48,17 @@ class Settings:
             max_tool_result_chars=int(os.getenv("AGENT_MAX_TOOL_RESULT_CHARS", "30000")),
             loop_repeat_limit=int(os.getenv("AGENT_LOOP_REPEAT_LIMIT", "3")),
             log_dir=selected_log_dir,
+            safety_mode=(safety_mode or os.getenv("AGENT_SAFETY_MODE", "balanced")).strip().lower(),
+            input_price_per_million=(
+                float(os.getenv("AGENT_INPUT_PRICE_PER_MILLION"))
+                if os.getenv("AGENT_INPUT_PRICE_PER_MILLION")
+                else None
+            ),
+            output_price_per_million=(
+                float(os.getenv("AGENT_OUTPUT_PRICE_PER_MILLION"))
+                if os.getenv("AGENT_OUTPUT_PRICE_PER_MILLION")
+                else None
+            ),
         )
         if values.max_steps <= 0:
             raise ValueError("AGENT_MAX_STEPS must be positive.")
@@ -53,4 +68,9 @@ class Settings:
             raise ValueError("AGENT_LLM_MAX_RETRIES must be >= 0.")
         if values.retry_backoff < 0:
             raise ValueError("AGENT_RETRY_BACKOFF must be >= 0.")
+        if values.safety_mode not in {"strict", "balanced", "permissive"}:
+            raise ValueError("AGENT_SAFETY_MODE must be strict, balanced, or permissive.")
+        for price in (values.input_price_per_million, values.output_price_per_million):
+            if price is not None and price < 0:
+                raise ValueError("Token prices must be non-negative.")
         return values

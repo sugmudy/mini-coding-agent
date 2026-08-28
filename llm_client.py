@@ -29,9 +29,12 @@ class LLMClient:
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
         self.sleep_fn = sleep_fn
+        self.last_attempts = 0
+        self.last_retries = 0
+        self.last_usage: dict[str, Any] = {}
         try:
             # Credentials and base URL intentionally stay in standard SDK environment configuration.
-            # SDK retries are disabled because retry behavior belongs to this harness and is testable here.
+            # SDK retries stay disabled because retry policy is part of this harness and is tested here.
             self.client = OpenAI(timeout=timeout, max_retries=0)
         except Exception as exc:
             raise LLMClientError(
@@ -67,18 +70,40 @@ class LLMClient:
     def _request_with_retry(self, operation: Callable[[], Any], *, label: str) -> Any:
         attempts = self.max_retries + 1
         last_error: Exception | None = None
+        self.last_attempts = 0
+        self.last_retries = 0
         for attempt in range(attempts):
+            self.last_attempts = attempt + 1
             try:
-                return operation()
+                result = operation()
+                self.last_retries = attempt
+                return result
             except self._openai_error_type() as exc:
                 last_error = exc
                 if not self._is_retryable(exc) or attempt >= self.max_retries:
+                    self.last_retries = attempt
                     break
                 delay = self.retry_backoff * (2**attempt)
                 if delay > 0:
                     self.sleep_fn(delay)
         assert last_error is not None
-        raise LLMClientError(f"{label} failed after {attempt + 1} attempt(s): {last_error}") from last_error
+        raise LLMClientError(f"{label} failed after {self.last_attempts} attempt(s): {last_error}") from last_error
+
+    @staticmethod
+    def _usage_dict(usage: Any) -> dict[str, Any]:
+        if usage is None:
+            return {}
+        if hasattr(usage, "model_dump"):
+            value = usage.model_dump(exclude_none=True)
+            return value if isinstance(value, dict) else {}
+        if isinstance(usage, dict):
+            return dict(usage)
+        result = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"):
+            value = getattr(usage, key, None)
+            if value is not None:
+                result[key] = value
+        return result
 
     def list_models(self) -> list[str]:
         response = self._request_with_retry(self.client.models.list, label="List models request")
@@ -90,6 +115,7 @@ class LLMClient:
                 "No model selected. Set AGENT_MODEL or pass --model. Use --list-models to inspect available models."
             )
 
+        self.last_usage = {}
         response = self._request_with_retry(
             lambda: self.client.chat.completions.create(
                 model=self.model,
@@ -101,4 +127,5 @@ class LLMClient:
         )
         if not response.choices:
             raise LLMClientError("Model gateway returned no choices.")
+        self.last_usage = self._usage_dict(getattr(response, "usage", None))
         return response.choices[0].message

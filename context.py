@@ -21,6 +21,8 @@ class ContextManager:
             raise ValueError("max_tool_result_chars must be at least 2000.")
         self.max_history_chars = max_history_chars
         self.max_tool_result_chars = max_tool_result_chars
+        self.last_prepare_compacted = False
+        self.last_omitted_blocks = 0
 
     @staticmethod
     def _message_chars(message: dict[str, Any]) -> int:
@@ -48,6 +50,7 @@ class ContextManager:
             elif current:
                 current.append(message)
             else:
+                # Unexpected standalone messages are preserved as their own block.
                 blocks.append([message])
         if current:
             blocks.append(current)
@@ -90,6 +93,8 @@ class ContextManager:
         }
 
     def prepare(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.last_prepare_compacted = False
+        self.last_omitted_blocks = 0
         if not messages:
             return []
         prepared = deepcopy(messages)
@@ -101,6 +106,7 @@ class ContextManager:
         if total <= self.max_history_chars:
             return prepared
 
+        # Preserve system + original user task exactly.
         prefix: list[dict[str, Any]] = []
         remaining_start = 0
         for idx, message in enumerate(prepared):
@@ -114,12 +120,15 @@ class ContextManager:
         prefix_cost = sum(self._message_chars(m) for m in prefix)
         kept_reversed: list[list[dict[str, Any]]] = []
         running = prefix_cost
+
+        # Reserve room for a deterministic omission summary.
         reserve = 3_000
         for block in reversed(blocks):
             block_cost = sum(self._message_chars(m) for m in block)
             if running + block_cost + reserve > self.max_history_chars and kept_reversed:
                 break
             if running + block_cost > self.max_history_chars and not kept_reversed:
+                # Always keep the newest complete block; its tool result is already bounded.
                 kept_reversed.append(block)
                 break
             kept_reversed.append(block)
@@ -129,6 +138,8 @@ class ContextManager:
         omitted_count = max(0, len(blocks) - len(kept))
         result = list(prefix)
         if omitted_count:
+            self.last_prepare_compacted = True
+            self.last_omitted_blocks = omitted_count
             result.append(self._omission_summary(blocks[:omitted_count]))
         for block in kept:
             result.extend(block)

@@ -59,3 +59,11 @@ This document records the main V2 design decisions and the failure modes they ad
 ## Testing philosophy
 
 V2 tests deterministic harness behavior without requiring a paid/live model request. The suite covers both happy paths and boundary conditions: ambiguous edits, path escapes, invalid line ranges, search modes, tool protocol preservation during context compaction, loop cycles, retry classification, command policy, secret redaction, validation nudging, and a full fake-LLM edit/validate loop.
+
+## V3: reliability becomes observable and enforceable
+
+V3 does not replace the V2 mechanisms; it exposes and strengthens them. `AgentState` now aggregates LLM/tool latency, token usage, retries and context compactions so reliability behavior can be inspected after a real run. The final report uses these runtime facts rather than model claims.
+
+Safety also moves beyond prompt guidance. `SafetyPolicy` sits on the local execution path, and review/block decisions happen before commands or suspicious whole-file rewrites are executed. The terminal UI receives only an approval callback; low-level tools therefore remain deterministic and testable.
+
+The V3 UI is intentionally an adapter. Rich rendering, plain output and quiet execution all share the same Agent/Tool runtime, preventing product polish from becoming a second control-flow implementation.

@@ -38,11 +38,12 @@ def test_prepare_compacts_only_complete_interaction_blocks():
 
     original = deepcopy(messages)
     prepared = manager.prepare(messages)
-    assert messages == original
+    assert messages == original  # Full audit history is not mutated.
     assert prepared[0]["role"] == "system"
     assert prepared[1]["role"] == "user"
     assert any("Context compaction summary" in m.get("content", "") for m in prepared)
 
+    # Every preserved tool result still has its matching assistant call in the prepared view.
     call_ids = {
         call["id"]
         for message in prepared

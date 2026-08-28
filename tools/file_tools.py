@@ -4,6 +4,8 @@ import difflib
 from pathlib import Path
 from typing import Iterable
 
+from safety import ApprovalCallback, RiskLevel, SafetyPolicy
+
 
 class WorkspaceError(RuntimeError):
     """Raised when a file operation is invalid for the configured workspace."""
@@ -32,9 +34,17 @@ class FileTools:
     MAX_READ_CHARS = 40_000
     MAX_DIFF_CHARS = 20_000
 
-    def __init__(self, workspace: str | Path) -> None:
+    def __init__(
+        self,
+        workspace: str | Path,
+        *,
+        safety_policy: SafetyPolicy | None = None,
+        approval_callback: ApprovalCallback | None = None,
+    ) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self.safety_policy = safety_policy or SafetyPolicy("balanced")
+        self.approval_callback = approval_callback
 
     def _resolve(self, relative_path: str) -> Path:
         path = (self.workspace / relative_path).resolve()
@@ -121,6 +131,7 @@ class FileTools:
         if len(selected_text) > self.MAX_READ_CHARS:
             truncated = True
             selected_text = selected_text[: self.MAX_READ_CHARS]
+            # Reconstruct line count after truncation so metadata remains honest.
             selected = selected_text.splitlines(keepends=True)
             end = start + max(len(selected) - 1, 0)
 
@@ -132,7 +143,11 @@ class FileTools:
             "total_lines": len(lines),
             "content": display,
             "truncated": truncated,
-            "hint": "Use start_line/end_line to read a smaller range." if truncated else None,
+            "hint": (
+                "Use start_line/end_line to read a smaller range."
+                if truncated
+                else None
+            ),
         }
 
     def write_file(self, path: str, content: str) -> dict[str, object]:
@@ -142,15 +157,27 @@ class FileTools:
 
         existed = target.exists()
         old_content = target.read_text(encoding="utf-8", errors="replace") if existed and target.is_file() else ""
+        relative = target.relative_to(self.workspace).as_posix()
+        safety = self.safety_policy.classify_rewrite(relative, old_content, content)
+        approved = safety.level is RiskLevel.SAFE
+        if safety.level is not RiskLevel.SAFE:
+            approved = self.safety_policy.authorize(safety, self.approval_callback)
+            if not approved:
+                raise WorkspaceError(f"SafetyPolicy denied write_file: {safety.reason}")
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        relative = target.relative_to(self.workspace).as_posix()
 
         return {
             "path": relative,
             "created": not existed,
             "characters_written": len(content),
             "diff": self._build_diff(relative, old_content, content) if existed else None,
+            "safety": {
+                "level": safety.level.value,
+                "reason": safety.reason,
+                "approved": approved,
+            },
         }
 
     def edit_file(self, path: str, old_text: str, new_text: str) -> dict[str, object]:

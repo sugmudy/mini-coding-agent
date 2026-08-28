@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from safety import ApprovalCallback, SafetyPolicy
+
 from tools.file_tools import FileTools
 from tools.search_tool import SearchTool
 from tools.shell_tool import ShellTool
@@ -22,10 +24,25 @@ class ToolSpec:
 class ToolRegistry:
     """Owns the model-visible schemas and the local function dispatcher."""
 
-    def __init__(self, workspace: str | Path, command_timeout: int = 30) -> None:
-        file_tools = FileTools(workspace)
+    def __init__(
+        self,
+        workspace: str | Path,
+        command_timeout: int = 30,
+        *,
+        safety_policy: SafetyPolicy | None = None,
+        approval_callback: ApprovalCallback | None = None,
+    ) -> None:
+        self.workspace = Path(workspace).expanduser().resolve()
+        policy = safety_policy or SafetyPolicy("balanced")
+        file_tools = FileTools(workspace, safety_policy=policy, approval_callback=approval_callback)
         search_tool = SearchTool(workspace)
-        shell_tool = ShellTool(workspace, timeout=command_timeout)
+        shell_tool = ShellTool(
+            workspace,
+            timeout=command_timeout,
+            safety_policy=policy,
+            approval_callback=approval_callback,
+        )
+        self.safety_policy = policy
 
         self._tools: dict[str, ToolSpec] = {
             "list_files": ToolSpec(

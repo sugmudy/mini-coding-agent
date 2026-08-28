@@ -1,4 +1,4 @@
-# Secrets / local environment
+# Credentials / local environment
 .env
 .env.*
 !.env.example
@@ -13,12 +13,8 @@ venv/
 # Agent runtime artifacts
 logs/
 
-# Agent workspace: keep the directory but not user projects
-workspace/*
-!workspace/.gitkeep
-
 # IDE / OS
-.vscode/
 .idea/
+.vscode/
 .DS_Store
 Thumbs.db
