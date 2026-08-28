@@ -1,4 +1,4 @@
-# Secrets
+# Secrets / local environment
 .env
 .env.*
 !.env.example
@@ -10,12 +10,15 @@ __pycache__/
 .venv/
 venv/
 
+# Agent runtime artifacts
+logs/
+
+# Agent workspace: keep the directory but not user projects
+workspace/*
+!workspace/.gitkeep
+
 # IDE / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Agent workspace: keep the directory but not user projects
-workspace/*
-!workspace/.gitkeep
