@@ -36,6 +36,6 @@ def test_registry_handles_bad_json(tmp_path):
 
 def test_run_command_returns_exit_code(tmp_path):
     shell = ShellTool(tmp_path, timeout=5)
-    result = json.loads(shell.run_command('python -c "print(123)"'))
+    result = shell.run_command('python -c "print(123)"')
     assert result["exit_code"] == 0
     assert "123" in result["stdout"]
