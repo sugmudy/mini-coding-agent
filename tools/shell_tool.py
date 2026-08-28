@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -49,7 +48,7 @@ class ShellTool:
             )
         return argv
 
-    def run_command(self, command: str) -> str:
+    def run_command(self, command: str) -> dict[str, object]:
         argv = self._parse(command)
         try:
             completed = subprocess.run(
@@ -91,4 +90,4 @@ class ShellTool:
                 "error": f"Failed to start command: {exc}",
             }
 
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return payload
