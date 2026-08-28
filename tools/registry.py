@@ -9,7 +9,7 @@ from tools.file_tools import FileTools
 from tools.shell_tool import ShellTool
 
 
-ToolFunction = Callable[..., str]
+ToolFunction = Callable[..., Any]
 
 
 @dataclass(frozen=True)
