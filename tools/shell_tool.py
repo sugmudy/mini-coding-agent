@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -14,7 +13,7 @@ class CommandPolicyError(RuntimeError):
 class ShellTool:
     MAX_OUTPUT_CHARS = 30_000
     ALLOWED_EXECUTABLES = {
-        "python", "python3", "pytest", "pip", "pip3", "git", "node", "npm", "npx",
+        "python", "python3", "py", "pytest", "pip", "pip3", "git", "node", "npm", "npx",
         "java", "javac", "gcc", "g++", "clang", "clang++", "cmake", "make", "cargo", "go",
     }
 
@@ -34,7 +33,7 @@ class ShellTool:
         if not command.strip():
             raise CommandPolicyError("Command cannot be empty.")
         try:
-            argv = shlex.split(command, posix=os.name != "nt")
+            argv = shlex.split(command)
         except ValueError as exc:
             raise CommandPolicyError(f"Cannot parse command: {exc}") from exc
         if not argv:
