@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 ## 2. Configure OpenLux
 
-The project keeps credentials out of source code and relies on the standard environment configuration supported by the OpenAI Python SDK. The SDK supports `OPENAI_BASE_URL` for OpenAI-compatible gateways. citeturn623139search2
+The project keeps credentials out of source code and relies on the standard environment configuration supported by the OpenAI Python SDK. The SDK supports `OPENAI_BASE_URL` for OpenAI-compatible gateways.
 
 For OpenLux, configure these values locally. Replace the placeholders with your own token and a model ID available to that token.
 
