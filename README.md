@@ -1,72 +1,96 @@
 # Mini Coding Agent
 
-A lightweight coding agent implemented from scratch for the NJU Software Engineering recommendation assessment.
+A compact coding agent implemented from scratch for the NJU Software Engineering recommendation assessment.
 
-The project uses an OpenAI-compatible model gateway for inference and native tool-calling, while the agent harness itself is implemented locally: conversation history, tool definitions and dispatch, file operations, command execution, loop control, termination, and error handling.
+The remote model gateway is used only for inference and native tool calling. The agent harness itself runs locally and owns conversation/context management, tool schemas and dispatch, workspace file access, command execution, retry policy, loop control, logging, termination, and error recovery.
 
-## V1 Features
+## V2: Reliable Coding Agent
 
-- OpenAI-compatible Chat Completions client (OpenLux can be used as the gateway)
-- Native function/tool calling
-- Multi-turn conversation history
-- Local tool registry and dispatcher
-- Recursive workspace file listing
-- Workspace-constrained file reading and writing
-- Guarded local development-command execution with timeout
-- Tool-error feedback to the model instead of process crashes
-- Maximum-step termination guard
-- CLI task input and model listing
-- Credentials kept outside source code through SDK environment configuration
-- Unit tests for tools, dispatcher behavior, command execution, and the complete agent loop
+V2 keeps the small V1 harness but strengthens the parts that matter on real codebases:
+
+- **Precise editing** — `edit_file` performs one exact, unique replacement and refuses ambiguous edits; successful edits return a unified diff.
+- **Code search** — `search_files` performs cross-platform literal/regex search with path scopes, file globs, result limits, binary/large-file skipping, and line metadata.
+- **Focused reads** — `read_file` supports inclusive line ranges, line numbers, size limits, and metadata instead of repeatedly injecting entire large files.
+- **Context control** — full history is retained for audit, while the model receives a bounded view. Compaction preserves complete assistant/tool interaction blocks so tool-call protocol pairs are never split.
+- **Loop detection** — exact repetition and short periodic tool cycles are detected. A successful code edit advances a workspace generation so legitimate re-reading after changes is not incorrectly blocked.
+- **Transient API recovery** — model requests use an explicit, testable retry policy for rate limits, 5xx responses, timeouts, and connection failures with exponential backoff; non-transient request/auth failures fail fast.
+- **Session tracing** — append-only JSONL logs capture model/tool timing and agent events with conservative secret redaction. Runtime logs are ignored by Git.
+- **Validation guard** — if code was changed but no command was run, the runtime nudges the model once to validate before claiming completion when reasonable.
+- **Runtime state** — changed files, command history, tool counts, and current step are tracked independently from model memory.
+
+The V1 guarantees remain: workspace-constrained file access, structured tool errors, guarded command execution with `shell=False`, timeouts/output limits, maximum-step termination, and credentials outside source code.
 
 ## Architecture
 
 ```text
-User -> Agent -> LLMClient -> Gateway -> LLM
-          ^                       |
-          |                       v
-          +--- Tool Results <- Tool Calls
-                 |
-                 +-- list_files
-                 +-- read_file
-                 +-- write_file
-                 +-- run_command
+User Task
+   |
+   v
+ main.py
+   |
+   +--> Settings / SessionLogger
+   |
+   v
+ Agent ----------------------------------------------------+
+   |                                                       |
+   | full audit history                                    |
+   +--> ContextManager --> bounded model view              |
+   |                          |                            |
+   |                          v                            |
+   |                     LLMClient --> Gateway --> LLM     |
+   |                          ^                   |         |
+   |                          |                   v         |
+   |                    retry policy          tool_calls    |
+   |                                              |         |
+   +--> LoopDetector -----------------------------+         |
+   |                                              |         |
+   v                                              v         |
+ ToolRegistry --> list_files / read_file / search_files    |
+              --> write_file / edit_file / run_command     |
+   |                                                        |
+   +--> structured result --> ContextManager --> history ---+
 ```
 
-The remote API is used only for model inference. File and command tools execute locally in this project.
+The project intentionally does **not** use LangChain, LlamaIndex, OpenAI Agents SDK, AutoGen, CrewAI, or any other agent framework.
 
 ## Quick Start
 
-Create and activate a virtual environment, then install dependencies:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Configure the standard OpenAI Python SDK environment for your OpenAI-compatible gateway. For OpenLux the base URL is:
+Configure your OpenAI-compatible gateway in the local shell. For OpenLux:
 
 ```text
-https://api.openlux.ai/v1
+OPENAI_BASE_URL=https://api.openlux.ai/v1
+OPENAI_API_KEY=<your token>
+AGENT_MODEL=<model id>
 ```
 
-Keep the real credential only in your local shell environment. Set `AGENT_MODEL` to a model ID available through your token, or pass `--model` on the command line.
-
-List available models:
+List models exposed by the configured gateway:
 
 ```bash
 python main.py --list-models
 ```
 
-Put a project in `workspace/`, then run:
+Run against the default `workspace/`:
 
 ```bash
-python main.py "Inspect the project, fix the bug, and run the tests"
+python main.py "Inspect the project, fix the failing tests, and validate the fix"
 ```
 
-Or point the agent at another directory:
+Or point at another local project:
 
 ```bash
 python main.py --workspace path/to/project "Fix the failing tests"
+```
+
+A local JSONL trace is written to `logs/` by default. Disable it for a run with:
+
+```bash
+python main.py --no-log "Fix the bug"
 ```
 
 ## Tests
@@ -75,17 +99,20 @@ python main.py --workspace path/to/project "Fix the failing tests"
 pytest -q
 ```
 
-The automated tests do not require a live API credential.
+The automated suite does not require a live API credential. It covers precise edits, ranged reads, workspace containment, code search, context compaction/protocol integrity, loop detection, retry behavior, structured logging/redaction, command policy, registry behavior, and complete multi-step agent execution.
 
 ## Documentation
 
 - [Usage Guide](docs/USAGE.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Reliability Design](docs/RELIABILITY.md)
 
-## Security
+## Security Boundary
 
-Never commit real API credentials. File tools reject paths that escape the configured workspace. The command tool uses `shell=False`, a development-command allow-list, a workspace working directory, output limits, and a timeout. This is a pragmatic safety boundary, not a full operating-system sandbox.
+Credentials are never embedded in source code. File operations resolve paths against the configured workspace and reject path escapes. `run_command` tokenizes commands, uses `shell=False`, runs with the workspace as `cwd`, applies an executable allow-list, captures bounded output, and enforces a timeout.
 
-## Current Scope
+This is a pragmatic development-command boundary, **not** a full OS/container sandbox. Stronger isolation and interactive approval are candidates for a later polished version.
 
-V1 intentionally favors a small, explicit, explainable harness over framework-heavy features. Planned improvements include precise patch editing, code search, context compression, retry/loop controls, richer logging, and a polished terminal experience.
+## Scope
+
+V2 focuses on making the harness reliable rather than adding framework-heavy features. GUI, browser tools, multi-agent orchestration, RAG/vector databases, long-term memory, Docker sandboxing, MCP, and streaming are intentionally outside the current scope.
