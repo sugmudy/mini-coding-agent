@@ -1,6 +1,6 @@
 # Usage Guide
 
-## 1. Create a virtual environment
+## 1. Environment setup
 
 ### Windows PowerShell
 
@@ -18,11 +18,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. Configure OpenLux
+## 2. Configure an OpenAI-compatible gateway
 
-The project keeps credentials out of source code and relies on the standard environment configuration supported by the OpenAI Python SDK. The SDK supports `OPENAI_BASE_URL` for OpenAI-compatible gateways.
+Credentials remain outside source code. The project uses the standard environment configuration supported by the OpenAI Python SDK.
 
-For OpenLux, configure these values locally. Replace the placeholders with your own token and a model ID available to that token.
+For OpenLux:
 
 ### Windows PowerShell
 
@@ -40,68 +40,136 @@ export OPENAI_API_KEY="<your OpenLux token>"
 export AGENT_MODEL="<model id>"
 ```
 
-Do not place the real token in this repository, README files, screenshots, or recorded demos.
+Never store the real credential in the repository, README, screenshots, recordings, or session examples.
 
-To inspect model IDs available through the configured gateway:
+List models available through the configured gateway:
 
 ```bash
 python main.py --list-models
 ```
 
-You may also select a model per run with `--model`.
+A model may also be selected per run:
 
-## 3. Prepare a workspace
-
-By default the agent works in `./workspace`, which is created automatically.
-
-Example:
-
-```text
-workspace/
-├── calculator.py
-└── test_calculator.py
+```bash
+python main.py --model MODEL_ID "Fix the failing tests"
 ```
 
-You can point at another project directory:
+## 3. Select a workspace
+
+Default workspace:
+
+```text
+./workspace
+```
+
+Or point to another local project:
 
 ```bash
 python main.py --workspace path/to/project "Fix the failing tests"
 ```
 
-## 4. Run a task
+All file tools resolve paths against this directory. Path traversal outside it is rejected.
 
-Interactive mode:
+## 4. Run tasks
+
+Interactive:
 
 ```bash
 python main.py
 ```
 
-Then enter a task at `Task>`.
-
-One-shot mode:
+One-shot:
 
 ```bash
-python main.py "Fix the bug and run the tests"
+python main.py "Find the cause of the failing tests, fix it, and validate the result"
 ```
 
-With explicit options:
+Useful CLI flags:
 
-```bash
-python main.py --model MODEL_ID --workspace ./workspace --max-steps 20 "Fix the failing tests"
+```text
+--workspace PATH    project directory
+--model MODEL_ID    override AGENT_MODEL
+--max-steps N       maximum model turns (default 30)
+--quiet             hide intermediate trace output
+--log-dir PATH      JSONL session log directory
+--no-log            disable session logging for this run
+--list-models       list gateway models and exit
 ```
 
-Use `--quiet` to hide intermediate tool traces.
+## 5. V2 tool behavior
 
-## 5. Run tests
+### Search first
 
-The repository tests do not require a live API credential and use a fake LLM for the agent-loop test.
+The model can call `search_files` with literal/regex queries, path scopes and file globs. Search output is bounded and includes line numbers.
+
+### Focused reads
+
+`read_file` accepts optional `start_line` and `end_line`. Large files should be navigated with focused ranges rather than repeatedly loaded in full.
+
+### Precise edits
+
+`edit_file` accepts an exact `old_text` and `new_text`. The old snippet must be unique. Ambiguous or missing snippets produce structured errors so the model can re-read and refine the edit. Successful edits return a unified diff.
+
+### Whole-file writes
+
+`write_file` remains available for new files and intentional complete replacements.
+
+### Validation commands
+
+`run_command` uses `shell=False`, an executable allow-list, workspace `cwd`, timeout, and bounded output. Supported executables include common Python, Git, Node, Java, C/C++, CMake/Make, Cargo, and Go development commands.
+
+If files were changed and the model attempts to finish without running any command, V2 issues one runtime validation nudge.
+
+## 6. Session logs
+
+By default a JSONL trace is written under `logs/`:
+
+```text
+logs/session_YYYYMMDD_HHMMSS_xxxxxx.jsonl
+```
+
+It contains events such as:
+
+```text
+session_start
+llm_request
+llm_response
+tool_result
+tool_blocked
+validation_nudge
+session_complete
+```
+
+Logs are local runtime artifacts and are excluded from Git. Secret-like values are redacted conservatively. Use `--no-log` when no trace is desired.
+
+## 7. Runtime configuration
+
+The following optional environment variables tune V2 without code changes:
+
+```text
+AGENT_MODEL
+AGENT_WORKSPACE
+AGENT_MAX_STEPS              default 30
+AGENT_COMMAND_TIMEOUT        default 30 seconds
+AGENT_LLM_TIMEOUT            default 60 seconds
+AGENT_LLM_MAX_RETRIES        default 3
+AGENT_RETRY_BACKOFF          default 1.0 seconds
+AGENT_MAX_HISTORY_CHARS      default 160000
+AGENT_MAX_TOOL_RESULT_CHARS  default 30000
+AGENT_LOOP_REPEAT_LIMIT      default 3
+AGENT_LOG_DIR                default logs
+```
+
+## 8. Tests
+
+Run the full deterministic suite:
 
 ```bash
 pytest -q
 ```
 
-## Command policy
+The suite does not need a live API key. For real end-to-end verification, configure the gateway and point the agent at a disposable test project, then ask it to fix failing tests.
 
-The V1 `run_command` tool does not evaluate an arbitrary shell string. It tokenizes commands, uses `shell=False`, applies a timeout, and limits the executable to common development tools such as Python, pytest, pip, git, Node.js tooling, Java, C/C++ compilers, CMake, Make, Cargo, and Go.
+## 9. Safety note
 
-This is a safety boundary rather than a full OS sandbox.
+The workspace and command policies reduce accidental reach but do not provide a hardened sandbox. Run the agent on code/workspaces you are comfortable allowing local development commands to modify.
