@@ -18,23 +18,29 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. Configure the OpenAI-compatible gateway
+## 2. Configure OpenLux
 
-The project deliberately keeps credentials out of source code. It uses the standard environment configuration understood by the OpenAI Python SDK.
+The project keeps credentials out of source code and relies on the standard environment configuration supported by the OpenAI Python SDK. The SDK supports `OPENAI_BASE_URL` for OpenAI-compatible gateways. citeturn623139search2
 
-For OpenLux, set the SDK base URL to:
+For OpenLux, configure these values locally. Replace the placeholders with your own token and a model ID available to that token.
 
-```text
-https://api.openlux.ai/v1
+### Windows PowerShell
+
+```powershell
+$env:OPENAI_BASE_URL="https://api.openlux.ai/v1"
+$env:OPENAI_API_KEY="<your OpenLux token>"
+$env:AGENT_MODEL="<model id>"
 ```
 
-Then configure the SDK credential environment variable with your own OpenLux token. Do not place the token in this repository, README files, screenshots, or recorded demos.
+### macOS / Linux
 
-Set the model separately through:
-
-```text
-AGENT_MODEL=<model id>
+```bash
+export OPENAI_BASE_URL="https://api.openlux.ai/v1"
+export OPENAI_API_KEY="<your OpenLux token>"
+export AGENT_MODEL="<model id>"
 ```
+
+Do not place the real token in this repository, README files, screenshots, or recorded demos.
 
 To inspect model IDs available through the configured gateway:
 
