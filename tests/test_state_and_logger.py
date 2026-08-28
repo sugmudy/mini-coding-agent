@@ -39,3 +39,15 @@ def test_session_logger_redacts_sensitive_dictionary_keys(tmp_path):
     content = logger.path.read_text(encoding="utf-8")
     assert "do-not-store" not in content
     assert '"normal": "ok"' in content
+
+
+def test_session_logger_redacts_json_string_credentials_and_bearer(tmp_path):
+    logger = SessionLogger(tmp_path)
+    logger.log(
+        "test",
+        arguments='{"api_key":"hidden-value","other":"ok"}',
+        auth="Bearer abcdefghijklmnopqrstuvwxyz",
+    )
+    content = logger.path.read_text(encoding="utf-8")
+    assert "hidden-value" not in content
+    assert "abcdefghijklmnopqrstuvwxyz" not in content
