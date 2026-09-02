@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Iterable
 
@@ -33,6 +37,7 @@ class FileTools:
     MAX_LIST_ENTRIES = 500
     MAX_READ_CHARS = 40_000
     MAX_DIFF_CHARS = 20_000
+    MISSING_REVISION = "missing"
 
     def __init__(
         self,
@@ -45,6 +50,9 @@ class FileTools:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.safety_policy = safety_policy or SafetyPolicy("balanced")
         self.approval_callback = approval_callback
+        # One registry serializes its in-process read/check/write critical sections.
+        # Cross-process and cross-registry conflicts are detected by expected_sha256.
+        self._write_lock = threading.RLock()
 
     def _resolve(self, relative_path: str) -> Path:
         path = (self.workspace / relative_path).resolve()
@@ -58,6 +66,54 @@ class FileTools:
         except ValueError:
             return True
         return any(part in self.DEFAULT_IGNORED_DIRS for part in parts)
+
+    @staticmethod
+    def _sha256_bytes(content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
+
+    def _revision(self, target: Path) -> str:
+        if not target.exists():
+            return self.MISSING_REVISION
+        if not target.is_file():
+            raise WorkspaceError(f"Path is not a file: {target.name}")
+        return self._sha256_bytes(target.read_bytes())
+
+    def _assert_revision(self, target: Path, expected_sha256: str | None) -> str:
+        actual = self._revision(target)
+        if expected_sha256 is not None and expected_sha256 != actual:
+            raise WorkspaceError(
+                "ConcurrentModification: file revision changed "
+                f"(expected {expected_sha256}, found {actual}). Re-read the file before editing."
+            )
+        return actual
+
+    @staticmethod
+    def _atomic_write_text(target: Path, content: str) -> None:
+        """Durably stage UTF-8 content, then atomically replace the destination."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        previous_mode = target.stat().st_mode if target.exists() else None
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary_path = Path(handle.name)
+            if previous_mode is not None:
+                os.chmod(temporary_path, previous_mode)
+            os.replace(temporary_path, target)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     @staticmethod
     def _line_slice(lines: list[str], start_line: int | None, end_line: int | None) -> tuple[int, int, list[str]]:
@@ -122,7 +178,8 @@ class FileTools:
         if not target.is_file():
             raise WorkspaceError(f"Path is not a file: {path}")
 
-        content = target.read_text(encoding="utf-8", errors="replace")
+        raw_content = target.read_bytes()
+        content = raw_content.decode("utf-8", errors="replace")
         lines = content.splitlines(keepends=True)
         start, end, selected = self._line_slice(lines, start_line, end_line)
         selected_text = "".join(selected)
@@ -142,6 +199,7 @@ class FileTools:
             "end_line": end,
             "total_lines": len(lines),
             "content": display,
+            "sha256": self._sha256_bytes(raw_content),
             "truncated": truncated,
             "hint": (
                 "Use start_line/end_line to read a smaller range."
@@ -150,37 +208,56 @@ class FileTools:
             ),
         }
 
-    def write_file(self, path: str, content: str) -> dict[str, object]:
+    def write_file(
+        self,
+        path: str,
+        content: str,
+        expected_sha256: str | None = None,
+    ) -> dict[str, object]:
         target = self._resolve(path)
         if target == self.workspace:
             raise WorkspaceError("Cannot write to the workspace directory itself.")
 
-        existed = target.exists()
-        old_content = target.read_text(encoding="utf-8", errors="replace") if existed and target.is_file() else ""
-        relative = target.relative_to(self.workspace).as_posix()
-        safety = self.safety_policy.classify_rewrite(relative, old_content, content)
-        approved = safety.level is RiskLevel.SAFE
-        if safety.level is not RiskLevel.SAFE:
-            approved = self.safety_policy.authorize(safety, self.approval_callback)
-            if not approved:
-                raise WorkspaceError(f"SafetyPolicy denied write_file: {safety.reason}")
+        with self._write_lock:
+            before_sha256 = self._assert_revision(target, expected_sha256)
+            existed = target.exists()
+            old_content = (
+                target.read_text(encoding="utf-8", errors="replace")
+                if existed and target.is_file()
+                else ""
+            )
+            relative = target.relative_to(self.workspace).as_posix()
+            safety = self.safety_policy.classify_rewrite(relative, old_content, content)
+            approved = safety.level is RiskLevel.SAFE
+            if safety.level is not RiskLevel.SAFE:
+                approved = self.safety_policy.authorize(safety, self.approval_callback)
+                if not approved:
+                    raise WorkspaceError(f"SafetyPolicy denied write_file: {safety.reason}")
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+            self._atomic_write_text(target, content)
+            after_sha256 = self._revision(target)
 
-        return {
-            "path": relative,
-            "created": not existed,
-            "characters_written": len(content),
-            "diff": self._build_diff(relative, old_content, content) if existed else None,
-            "safety": {
-                "level": safety.level.value,
-                "reason": safety.reason,
-                "approved": approved,
-            },
-        }
+            return {
+                "path": relative,
+                "created": not existed,
+                "characters_written": len(content),
+                "before_sha256": before_sha256,
+                "sha256": after_sha256,
+                "diff": self._build_diff(relative, old_content, content) if existed else None,
+                "safety": {
+                    "level": safety.level.value,
+                    "reason": safety.reason,
+                    "approved": approved,
+                },
+            }
 
-    def edit_file(self, path: str, old_text: str, new_text: str) -> dict[str, object]:
+    def edit_file(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        expected_sha256: str | None = None,
+    ) -> dict[str, object]:
         if not old_text:
             raise WorkspaceError("old_text must not be empty.")
 
@@ -190,29 +267,33 @@ class FileTools:
         if not target.is_file():
             raise WorkspaceError(f"Path is not a file: {path}")
 
-        content = target.read_text(encoding="utf-8", errors="replace")
-        match_count = content.count(old_text)
-        if match_count == 0:
-            raise WorkspaceError(
-                "old_text was not found exactly once. Re-read the relevant file range and provide an exact snippet."
-            )
-        if match_count > 1:
-            raise WorkspaceError(
-                f"old_text matches {match_count} locations. Provide a more specific snippet so the edit is unambiguous."
-            )
+        with self._write_lock:
+            before_sha256 = self._assert_revision(target, expected_sha256)
+            content = target.read_text(encoding="utf-8", errors="replace")
+            match_count = content.count(old_text)
+            if match_count == 0:
+                raise WorkspaceError(
+                    "old_text was not found exactly once. Re-read the relevant file range and provide an exact snippet."
+                )
+            if match_count > 1:
+                raise WorkspaceError(
+                    f"old_text matches {match_count} locations. Provide a more specific snippet so the edit is unambiguous."
+                )
 
-        updated = content.replace(old_text, new_text, 1)
-        target.write_text(updated, encoding="utf-8")
-        relative = target.relative_to(self.workspace).as_posix()
-        line_number = content[: content.index(old_text)].count("\n") + 1
-        return {
-            "path": relative,
-            "match_count": 1,
-            "start_line": line_number,
-            "characters_removed": len(old_text),
-            "characters_inserted": len(new_text),
-            "diff": self._build_diff(relative, content, updated),
-        }
+            updated = content.replace(old_text, new_text, 1)
+            self._atomic_write_text(target, updated)
+            relative = target.relative_to(self.workspace).as_posix()
+            line_number = content[: content.index(old_text)].count("\n") + 1
+            return {
+                "path": relative,
+                "match_count": 1,
+                "start_line": line_number,
+                "characters_removed": len(old_text),
+                "characters_inserted": len(new_text),
+                "before_sha256": before_sha256,
+                "sha256": self._revision(target),
+                "diff": self._build_diff(relative, content, updated),
+            }
 
     def _build_diff(self, relative_path: str, before: str, after: str) -> str:
         diff = "".join(

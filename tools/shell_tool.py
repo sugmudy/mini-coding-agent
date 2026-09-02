@@ -17,6 +17,7 @@ class ShellTool:
         "python", "python3", "py", "pytest", "pip", "pip3", "git", "node", "npm", "npx",
         "java", "javac", "gcc", "g++", "clang", "clang++", "cmake", "make", "cargo", "go",
     }
+    SHELL_OPERATORS = {"|", "||", "&&", ";", "&", "<", ">", "2>", "2>>"}
 
     def __init__(
         self,
@@ -44,12 +45,33 @@ class ShellTool:
     def _parse(self, command: str) -> list[str]:
         if not command.strip():
             raise CommandPolicyError("Command cannot be empty.")
+        if "\n" in command or "\r" in command:
+            raise CommandPolicyError(
+                "Multi-line commands and heredocs are not supported because commands run with shell=False. "
+                "Use one direct cross-platform command such as python -c instead."
+            )
         try:
             argv = shlex.split(command)
         except ValueError as exc:
             raise CommandPolicyError(f"Cannot parse command: {exc}") from exc
         if not argv:
             raise CommandPolicyError("Command cannot be empty.")
+        unsupported = next(
+            (
+                item
+                for item in argv
+                if item in self.SHELL_OPERATORS
+                or item.startswith(("<<", ">>"))
+                or "&&" in item
+                or "||" in item
+            ),
+            None,
+        )
+        if unsupported is not None:
+            raise CommandPolicyError(
+                f"Shell operator '{unsupported}' is not supported because commands run with shell=False. "
+                "Run one allowed executable at a time."
+            )
 
         executable = Path(argv[0]).name.lower()
         if executable.endswith(".exe"):

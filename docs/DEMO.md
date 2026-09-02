@@ -14,18 +14,21 @@ Use a disposable project with roughly 5–8 source/test files and these properti
 - after the first change, validation should either pass or reveal a second small issue that demonstrates error-driven iteration;
 - total runtime is comfortably below the video limit.
 
-## Recommended task wording
+## Recommended multi-turn demo
 
 ```text
-Inspect this project, diagnose all failing tests, make the minimum necessary fixes, and validate the final result.
+You> Inspect this project and diagnose the failing tests. Do not edit yet.
+You> Make the minimum necessary fixes for the issues you found and run focused tests.
+You> Run the complete test suite, then summarize the changed files.
+You> /status
 ```
 
-This wording gives the agent freedom to inspect, search, edit and validate instead of telling it where the bug is.
+This trajectory demonstrates that follow-ups reuse prior diagnosis and workspace observations rather than starting a disconnected agent run. It also shows that status is derived locally and does not spend an API request.
 
 ## Ideal visible trajectory
 
 ```text
-Task shown in terminal
+Turn 1 diagnosis
   -> search_files for a failing symbol/error
   -> focused read around relevant lines
   -> edit_file
@@ -33,7 +36,11 @@ Task shown in terminal
   -> pytest -q
   -> if needed: inspect failure -> second focused edit
   -> pytest -q succeeds
-  -> final run report
+  -> turn report
+  -> Turn 2 refers to prior diagnosis and edits
+  -> focused validation
+  -> Turn 3 runs full validation
+  -> /status and cumulative session report
 ```
 
 The final report should visibly show changed files, validation command, tool/model counts, token/latency metrics and session trace path. This demonstrates that runtime facts come from the harness rather than being invented by the model.
@@ -54,7 +61,7 @@ Show passing validation plus runtime-derived changed files, calls/tokens/latency
 
 ### 1:50–2:00 — Architecture sentence
 
-Finish with one sentence describing the design evolution: V1 built the minimal harness, V2 improved reliability, and V3 added safety, observability and terminal usability.
+Finish with one sentence describing the design evolution: V1 built the minimal harness, V2 improved reliability, V3 added safety and observability, V4 added explicit multi-turn session semantics, and V5 added locally orchestrated Planner/Implementer/Reviewer collaboration without an agent framework.
 
 ## Optional safety mini-demo
 
@@ -79,3 +86,15 @@ is locally blocked even if the model requests it. This is useful for interview d
 - Use `--no-color` only if the recorder/terminal renders ANSI colors poorly.
 - Do not use `--quiet`; the tool trajectory is the most important evidence.
 - Keep the repository's actual commit/push workflow manual rather than asking the agent to perform it.
+
+## Optional V5 multi-Agent segment
+
+For a multi-Agent demo, use a tiny repository with one failing test and run:
+
+```bash
+python main.py --multi-agent --workspace demo-project --model MODEL_ID \
+  --review-rounds 2 --multi-agent-max-llm-calls 30 \
+  "Fix the defect with a minimal change and run the complete test suite"
+```
+
+Capture the Coordinator stage labels, resulting diff/test evidence, and final report. Explain that each role owns a separate Agent/LLM/history, while only validated JSON and bounded blackboard artifacts cross role boundaries. The command exits non-zero if review never approves or runtime state lacks a successful record for any planned acceptance command.

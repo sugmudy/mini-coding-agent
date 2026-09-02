@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from session_logger import SessionLogger
 from state import AgentState
@@ -22,6 +23,16 @@ def test_state_tracks_changes_commands_and_counts():
     assert summary["changed_files"] == ["a.py"]
     assert summary["commands_run"] == ["pytest -q"]
     assert summary["tool_counts"]["edit_file"] == 1
+
+
+def test_state_does_not_treat_failed_command_as_validation():
+    state = AgentState()
+    state.observe_tool(
+        "run_command",
+        '{"command":"pytest -q"}',
+        json.dumps({"ok": True, "result": {"exit_code": 1, "stderr": "failed"}}),
+    )
+    assert state.commands_run == []
 
 
 def test_session_logger_redacts_secret_like_strings(tmp_path):
@@ -51,3 +62,14 @@ def test_session_logger_redacts_json_string_credentials_and_bearer(tmp_path):
     content = logger.path.read_text(encoding="utf-8")
     assert "hidden-value" not in content
     assert "abcdefghijklmnopqrstuvwxyz" not in content
+
+
+def test_session_logger_serializes_concurrent_events_with_monotonic_sequence(tmp_path):
+    logger = SessionLogger(tmp_path)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda value: logger.log("worker_event", value=value), range(40)))
+
+    events = [json.loads(line) for line in logger.path.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 40
+    assert [event["event_seq"] for event in events] == list(range(1, 41))
+    assert all(event["schema_version"] == SessionLogger.TRACE_SCHEMA_VERSION for event in events)

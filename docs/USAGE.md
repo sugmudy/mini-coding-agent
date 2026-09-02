@@ -81,8 +81,10 @@ All file tools resolve paths against this directory. `../` path traversal or abs
 Interactive:
 
 ```bash
-python main.py
+python main.py --workspace path/to/project --model MODEL_ID
 ```
+
+This starts a persistent multi-turn conversation. Each normal line is a new user turn; prior user messages, assistant answers, and tool observations remain available to the next turn. Use `/help`, `/status`, `/history`, and `/exit` for local conversation control. These slash commands are not sent to the model.
 
 One-shot:
 
@@ -90,21 +92,42 @@ One-shot:
 python main.py "Inspect the project, diagnose all failing tests, make the minimum necessary fixes, and validate the final result"
 ```
 
-V3 CLI options:
+V4 CLI options:
 
 ```text
 --workspace PATH        project directory
 --model MODEL_ID        override AGENT_MODEL
---max-steps N           maximum model turns (default 30)
+--max-steps N           maximum model steps per user turn (default 30)
 --safety MODE           strict | balanced | permissive
 --yes                   auto-approve review actions (never blocked actions)
---quiet                 final answer only
+--quiet                 hide traces and print each final answer only
 --no-color              structured terminal output without colors
 --log-dir PATH          JSONL session log directory
 --no-log                disable session logging
 --list-models           list gateway models and exit
 --version               print Mini Coding Agent version
 ```
+
+V5 multi-Agent options:
+
+```text
+--multi-agent                   run Planner -> Implementer -> Reviewer; requires a task
+--review-rounds N               maximum Reviewer calls, including the first review
+--multi-agent-max-llm-calls N   hard aggregate model-call budget across all roles
+--multi-agent-token-budget N    optional observed-token budget checked between role turns
+```
+
+Example:
+
+```bash
+python main.py --multi-agent --workspace path/to/project --model MODEL_ID \
+  --review-rounds 2 --multi-agent-max-llm-calls 40 \
+  "Implement the requested feature and run the complete test suite"
+```
+
+Multi-Agent mode is currently one-shot. See [Multi-Agent Collaboration](MULTI_AGENT.md) for its role protocol and termination rules.
+
+On Windows, prefer `conda activate AIenv` followed by `python main.py ...`. Some `conda run` versions incorrectly re-encode captured Unicode model output through the GBK console and can report a printing error after the underlying workflow has already completed.
 
 ## 5. Tool behavior
 
@@ -114,19 +137,19 @@ V3 CLI options:
 
 ### Read only the relevant range
 
-`read_file` accepts `start_line` / `end_line` and returns line-numbered content plus total-line metadata. Large reads are bounded.
+`read_file` accepts `start_line` / `end_line` and returns line-numbered content, total-line metadata, and a SHA-256 revision. Large reads are bounded.
 
 ### Prefer precise edits
 
-`edit_file(path, old_text, new_text)` requires exactly one occurrence of `old_text`. Zero or multiple matches are explicit errors; the model must re-read and refine the snippet. Successful edits return a unified diff rendered in the terminal.
+`edit_file(path, old_text, new_text, expected_sha256?)` requires exactly one occurrence of `old_text`. Zero or multiple matches are explicit errors; the model must re-read and refine the snippet. Passing the revision from `read_file` turns the edit into an optimistic compare-and-swap operation, so stale concurrent work is refused. Successful edits use atomic replacement and return a unified diff rendered in the terminal.
 
 ### Whole-file replacement is guarded
 
-`write_file` is appropriate for new files and intentional complete rewrites. If an existing non-trivial file would shrink to less than roughly 35% of its prior size, V3 classifies the action as review-level and asks for approval in balanced mode.
+`write_file` is appropriate for new files and intentional complete rewrites. It accepts the same optional revision; use `expected_sha256="missing"` when a new file must not already exist. If an existing non-trivial file would shrink to less than roughly 35% of its prior size, V3 classifies the action as review-level and asks for approval in balanced mode.
 
 ### Validate with local commands
 
-`run_command` uses `shell=False`, an executable allow-list, workspace `cwd`, timeout, output bounds, and a V3 safety classification. Test/build/run commands normally execute automatically. Package installation and mutating Git actions can require approval; destructive Git history operations are blocked.
+`run_command` uses `shell=False`, an executable allow-list, workspace `cwd`, timeout, output bounds, and a V3 safety classification. It accepts one direct executable invocation at a time; pipes, redirection, command chaining, multi-line commands, and heredocs are rejected rather than being silently misinterpreted as arguments. Use a cross-platform form such as `python -c "..."` for short validation scripts. Test/build/run commands normally execute automatically. Package installation and mutating Git actions can require approval; destructive Git history operations are blocked.
 
 ## 6. Safety modes
 
@@ -164,7 +187,7 @@ python main.py --yes "Fix the project"
 
 ## 7. Terminal UI
 
-The default V3 interface uses Rich to show:
+The default V4 interface uses Rich to show:
 
 ```text
 session metadata
@@ -175,10 +198,11 @@ search/read summaries
 file diffs
 command exit/output
 warnings and safety approvals
-final run report
+per-turn answer/report
+final cumulative session report
 ```
 
-Use `--no-color` when recording in a terminal that does not render color reliably. Use `--quiet` for automation or when only the final model answer is desired.
+Use `--no-color` when recording in a terminal that does not render color reliably. Use `--quiet` when only answers are desired; input prompts remain available in interactive mode and `--yes` still controls review-level approvals.
 
 ## 8. Session traces and observability
 
@@ -192,16 +216,18 @@ Every event carries the same session ID. Typical events include:
 
 ```text
 session_start
+turn_start
 llm_request
 llm_response
 context_compaction
 tool_result
 tool_blocked
 validation_nudge
+turn_complete / turn_error
 session_complete
 ```
 
-The runtime records LLM/tool latency, retry count, token usage when the gateway returns `usage`, tool counts, changed files, validation commands and context compactions. Logs are excluded from Git and apply conservative credential redaction.
+The runtime records both per-turn and cumulative LLM/tool latency, retry count, token usage when the gateway returns `usage`, tool counts, changed files, validation commands and context compactions. Every turn carries a stable integer `turn_id`; the entire JSONL file carries one session ID. Logs are excluded from Git and apply conservative credential redaction without hiding numeric token metrics.
 
 Disable logging:
 
@@ -228,6 +254,9 @@ AGENT_WORKSPACE
 AGENT_MAX_STEPS                  default 30
 AGENT_COMMAND_TIMEOUT            default 30 seconds
 AGENT_LLM_TIMEOUT                default 60 seconds
+AGENT_LLM_STREAM                 default true; set false for non-streaming gateways
+AGENT_LLM_PARALLEL_TOOL_CALLS    default false; bounds each model response to one tool call
+AGENT_REASONING_EFFORT           optional: none/minimal/low/medium/high/xhigh
 AGENT_LLM_MAX_RETRIES            default 3
 AGENT_RETRY_BACKOFF              default 1.0 seconds
 AGENT_MAX_HISTORY_CHARS          default 160000

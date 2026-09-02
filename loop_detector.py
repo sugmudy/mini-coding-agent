@@ -76,3 +76,7 @@ class LoopDetector:
         )
         if succeeded and name in self.STATE_CHANGING_TOOLS:
             self._generation += 1
+
+    def begin_turn(self) -> None:
+        """Allow a follow-up turn to repeat inspections from an earlier turn."""
+        self._history.clear()

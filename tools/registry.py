@@ -31,6 +31,7 @@ class ToolRegistry:
         *,
         safety_policy: SafetyPolicy | None = None,
         approval_callback: ApprovalCallback | None = None,
+        allowed_tools: set[str] | frozenset[str] | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
         policy = safety_policy or SafetyPolicy("balanced")
@@ -154,6 +155,13 @@ class ToolRegistry:
                             "properties": {
                                 "path": {"type": "string", "description": "Workspace-relative file path."},
                                 "content": {"type": "string", "description": "Complete intended file content."},
+                                "expected_sha256": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional revision returned by read_file. Use 'missing' when the file must "
+                                        "still be absent. A mismatch refuses the write instead of overwriting newer work."
+                                    ),
+                                },
                             },
                             "required": ["path", "content"],
                             "additionalProperties": False,
@@ -180,6 +188,12 @@ class ToolRegistry:
                                     "description": "Exact existing snippet. Include enough surrounding context to be unique.",
                                 },
                                 "new_text": {"type": "string", "description": "Replacement snippet."},
+                                "expected_sha256": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional revision returned by read_file. A mismatch refuses a stale edit."
+                                    ),
+                                },
                             },
                             "required": ["path", "old_text", "new_text"],
                             "additionalProperties": False,
@@ -213,10 +227,23 @@ class ToolRegistry:
                 function=shell_tool.run_command,
             ),
         }
+        if allowed_tools is not None:
+            unknown = set(allowed_tools) - set(self._tools)
+            if unknown:
+                raise ValueError(f"Unknown allowed tool name(s): {', '.join(sorted(unknown))}")
+            self._tools = {
+                name: spec
+                for name, spec in self._tools.items()
+                if name in allowed_tools
+            }
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
         return [spec.schema for spec in self._tools.values()]
+
+    @property
+    def tool_names(self) -> frozenset[str]:
+        return frozenset(self._tools)
 
     def execute(self, name: str, raw_arguments: str) -> str:
         if name not in self._tools:

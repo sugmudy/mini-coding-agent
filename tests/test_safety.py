@@ -15,6 +15,41 @@ def test_command_safety_classification():
     assert policy.classify_command("git push --force origin main").level is RiskLevel.BLOCKED
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C . push origin main",
+        "git -c user.name=test commit -m test",
+        "git reset --hard=HEAD",
+        "git -c alias.ship=push ship origin main",
+        "git -calias.ship=push ship origin main",
+    ],
+)
+def test_git_option_prefixes_and_flag_values_cannot_bypass_blocked_policy(command):
+    assert SafetyPolicy("permissive").classify_command(command).level is RiskLevel.BLOCKED
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pip install sampleproject",
+        "python -m pip --disable-pip-version-check install sampleproject",
+        "python3 -m pip uninstall sampleproject",
+        "pip --disable-pip-version-check install sampleproject",
+        "npm i",
+        "npm --silent install package-name",
+        "npm add package-name",
+        "npx some-package",
+    ],
+)
+def test_dependency_command_aliases_require_review(command):
+    assert SafetyPolicy("balanced").classify_command(command).level is RiskLevel.REVIEW
+
+
+def test_unknown_git_subcommand_fails_closed_to_review():
+    assert SafetyPolicy("balanced").classify_command("git custom-helper").level is RiskLevel.REVIEW
+
+
 def test_blocked_git_action_cannot_be_overridden_by_permissive_mode(tmp_path):
     shell = ShellTool(tmp_path, safety_policy=SafetyPolicy("permissive"), approval_callback=lambda _: True)
     with pytest.raises(CommandPolicyError, match="SafetyPolicy denied"):

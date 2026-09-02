@@ -36,6 +36,41 @@ class SafetyPolicy:
     """
 
     MODES = {"balanced", "strict", "permissive"}
+    GIT_BLOCKED_SUBCOMMANDS = {"commit", "push", "rebase", "cherry-pick", "clean"}
+    GIT_REVIEW_SUBCOMMANDS = {
+        "add",
+        "branch",
+        "checkout",
+        "config",
+        "merge",
+        "mv",
+        "restore",
+        "rm",
+        "stash",
+        "switch",
+        "tag",
+    }
+    GIT_SAFE_SUBCOMMANDS = {
+        "blame",
+        "describe",
+        "diff",
+        "grep",
+        "log",
+        "ls-files",
+        "rev-parse",
+        "show",
+        "status",
+    }
+    GIT_OPTIONS_WITH_VALUE = {
+        "-c",
+        "-C",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
 
     def __init__(self, mode: str = "balanced") -> None:
         normalized = mode.strip().lower()
@@ -50,6 +85,54 @@ class SafetyPolicy:
         except ValueError:
             return []
 
+    @classmethod
+    def _git_subcommand(cls, argv: list[str]) -> tuple[str, list[str], list[str]]:
+        """Return ``(subcommand, subcommand_args, global_options)``.
+
+        Git accepts global options before its subcommand (for example ``git -C .
+        status``). A policy that assumes ``argv[1]`` is always the subcommand is
+        vulnerable to trivial option-prefix bypasses.
+        """
+        index = 1
+        global_options: list[str] = []
+        while index < len(argv):
+            token = argv[index]
+            if token == "--":
+                index += 1
+                break
+            if not token.startswith("-") or token == "-":
+                break
+
+            global_options.append(token)
+            option_name = token.split("=", 1)[0]
+            consumes_next = option_name in cls.GIT_OPTIONS_WITH_VALUE and "=" not in token
+            # ``-cname=value`` and ``-Cpath`` carry their values in the same token.
+            if token.startswith("-c") and token != "-c":
+                consumes_next = False
+            if token.startswith("-C") and token != "-C":
+                consumes_next = False
+            if consumes_next and index + 1 < len(argv):
+                global_options.append(argv[index + 1])
+                index += 2
+            else:
+                index += 1
+
+        if index >= len(argv):
+            return "", [], global_options
+        return argv[index].lower(), [item.lower() for item in argv[index + 1 :]], global_options
+
+    @staticmethod
+    def _has_flag(args: list[str], flag: str) -> bool:
+        return any(item == flag or item.startswith(flag + "=") for item in args)
+
+    @staticmethod
+    def _python_module(args: list[str]) -> tuple[str, list[str]]:
+        """Extract ``python -m MODULE ...`` while tolerating interpreter flags."""
+        for index, item in enumerate(args):
+            if item == "-m" and index + 1 < len(args):
+                return args[index + 1], args[index + 2 :]
+        return "", []
+
     def classify_command(self, command: str) -> SafetyDecision:
         argv = self._argv(command)
         if not argv:
@@ -61,15 +144,21 @@ class SafetyPolicy:
         args = [item.lower() for item in argv[1:]]
 
         if executable == "git":
-            sub = args[0] if args else ""
-            joined = " ".join(args)
+            sub, sub_args, global_options = self._git_subcommand(argv)
+            normalized_options = [item.lower() for item in global_options]
+            alias_override = any(
+                item.startswith("alias.")
+                or item.startswith("-calias.")
+                or "=alias." in item
+                for item in normalized_options
+            )
             blocked = (
-                sub in {"commit", "push", "rebase", "cherry-pick"}
-                or (sub == "reset" and "--hard" in args)
-                or sub == "clean"
-                or "--force" in args
-                or "--force-with-lease" in args
-                or (sub in {"checkout", "restore"} and ("." in args or "--source" in args))
+                alias_override
+                or sub in self.GIT_BLOCKED_SUBCOMMANDS
+                or (sub == "reset" and self._has_flag(sub_args, "--hard"))
+                or self._has_flag(sub_args, "--force")
+                or self._has_flag(sub_args, "--force-with-lease")
+                or (sub in {"checkout", "restore"} and ("." in sub_args or "--source" in sub_args))
             )
             if blocked:
                 return SafetyDecision(
@@ -77,26 +166,52 @@ class SafetyPolicy:
                     "Repository-history or destructive Git operations are intentionally disabled for the agent.",
                     command,
                 )
-            if sub in {"add", "checkout", "switch", "restore", "stash", "merge"}:
+            if sub in self.GIT_SAFE_SUBCOMMANDS:
+                return SafetyDecision(RiskLevel.SAFE, "Read-only or validation-oriented Git command.", command)
+            if sub in self.GIT_REVIEW_SUBCOMMANDS or sub == "reset":
                 return SafetyDecision(
                     RiskLevel.REVIEW,
                     f"git {sub} mutates repository state and should be explicitly approved.",
                     command,
                 )
-            return SafetyDecision(RiskLevel.SAFE, "Read-only or validation-oriented Git command.", command)
+            return SafetyDecision(
+                RiskLevel.REVIEW,
+                f"Unknown or potentially mutating git subcommand '{sub or '<missing>'}' requires approval.",
+                command,
+            )
+
+        if executable in {"python", "python3", "py"}:
+            module, module_args = self._python_module(args)
+            pip_actions = {"install", "uninstall", "download", "wheel"}
+            requested_action = next((item for item in module_args if item in pip_actions), None)
+            if module == "pip" and requested_action:
+                return SafetyDecision(
+                    RiskLevel.REVIEW,
+                    f"{executable} -m pip {requested_action} changes dependencies or local files.",
+                    command,
+                )
 
         if executable in {"pip", "pip3"}:
-            sub = args[0] if args else ""
-            if sub in {"install", "uninstall"}:
+            actions = {"install", "uninstall", "download", "wheel"}
+            sub = next((item for item in args if item in actions), "")
+            if sub:
                 return SafetyDecision(
                     RiskLevel.REVIEW,
                     f"{executable} {sub} changes the Python environment.",
                     command,
                 )
 
-        if executable in {"npm", "npx"}:
-            sub = args[0] if args else ""
-            if sub in {"install", "uninstall", "update", "ci"}:
+        if executable == "npx":
+            return SafetyDecision(
+                RiskLevel.REVIEW,
+                "npx can download and execute packages and therefore requires approval.",
+                command,
+            )
+
+        if executable == "npm":
+            actions = {"add", "ci", "i", "install", "remove", "rm", "uninstall", "update"}
+            sub = next((item for item in args if item in actions), "")
+            if sub:
                 return SafetyDecision(
                     RiskLevel.REVIEW,
                     f"{executable} {sub} can modify dependencies or the local environment.",

@@ -123,3 +123,34 @@ def test_agent_nudges_once_when_files_changed_without_validation(tmp_path):
         m.get("role") == "user" and "Runtime validation guard" in m.get("content", "")
         for m in agent.messages
     )
+
+
+def test_rejected_shell_syntax_does_not_satisfy_validation_guard(tmp_path):
+    (tmp_path / "x.py").write_text("value = 1\n", encoding="utf-8")
+    fake = FakeLLM(
+        [
+            FakeMessage(
+                tool_calls=[
+                    tool_call(
+                        "c1",
+                        "edit_file",
+                        {"path": "x.py", "old_text": "value = 1", "new_text": "value = 2"},
+                    )
+                ]
+            ),
+            FakeMessage(
+                tool_calls=[
+                    tool_call("c2", "run_command", {"command": "python - <<'PY'\nprint('fake validation')\nPY"})
+                ]
+            ),
+            FakeMessage(content="Done."),
+            FakeMessage(content="The attempted shell syntax was rejected; no valid executable check applies."),
+        ]
+    )
+    agent = Agent(llm=fake, tools=ToolRegistry(tmp_path), max_steps=5, verbose=False)
+
+    final = agent.run("Change the value")
+
+    assert "rejected" in final
+    assert agent.state.commands_run == []
+    assert agent.state.validation_nudges == 1

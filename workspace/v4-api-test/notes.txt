@@ -1,0 +1,5 @@
+Project codename: ORCHID-47
+Expected numeric value: 7
+
+This disposable fixture is used to verify that a multi-turn agent session can
+retain prior observations, perform a later file change, and validate the result.

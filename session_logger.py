@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,11 +21,25 @@ _SECRET_PATTERNS = [
 class SessionLogger:
     """Append-only JSONL trace with bounded fields and conservative secret redaction."""
 
+    TRACE_SCHEMA_VERSION = 1
     MAX_FIELD_CHARS = 50_000
+    SENSITIVE_KEYS = {
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth_token",
+        "access_token",
+        "bearer_token",
+        "password",
+        "secret",
+        "token",
+    }
 
     def __init__(self, log_dir: str | Path = "logs", *, enabled: bool = True) -> None:
         self.enabled = enabled
         self.path: Path | None = None
+        self._write_lock = threading.Lock()
+        self._event_sequence = 0
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_id = f"{stamp}-{uuid.uuid4().hex[:6]}"
         if enabled:
@@ -51,7 +66,10 @@ class SessionLogger:
             for key, item in value.items():
                 key_text = str(key)
                 normalized = key_text.lower().replace("-", "_")
-                if any(marker in normalized for marker in ("api_key", "apikey", "token", "secret", "password")):
+                sensitive = normalized in cls.SENSITIVE_KEYS or normalized.endswith(
+                    ("_api_key", "_password", "_secret", "_access_token", "_auth_token")
+                )
+                if sensitive:
                     sanitized[key_text] = "[REDACTED]"
                 else:
                     sanitized[key_text] = cls._sanitize(item)
@@ -65,11 +83,16 @@ class SessionLogger:
     def log(self, event: str, **data: Any) -> None:
         if not self.enabled or self.path is None:
             return
-        payload = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "session_id": self.session_id,
-            "event": event,
-            **self._sanitize(data),
-        }
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        sanitized = self._sanitize(data)
+        with self._write_lock:
+            self._event_sequence += 1
+            payload = {
+                "schema_version": self.TRACE_SCHEMA_VERSION,
+                "event_seq": self._event_sequence,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": self.session_id,
+                "event": event,
+                **sanitized,
+            }
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")

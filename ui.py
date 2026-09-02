@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from safety import SafetyDecision
+from version import __version__
 
 
 @dataclass
@@ -15,14 +16,36 @@ class FinalReport:
     session_log: str | None
 
 
+@dataclass
+class TurnReport:
+    turn_id: int
+    final_text: str
+    state: dict[str, Any]
+
+
+@dataclass
+class SessionReport:
+    state: dict[str, Any]
+    session_log: str | None
+
+
 class BaseUI:
     def session_started(self, *, workspace: Path, model: str | None, max_steps: int, session_id: str) -> None:
         pass
 
-    def task(self, text: str) -> None:
+    def conversation_ready(self) -> None:
         pass
 
-    def llm_step(self, step: int, max_steps: int) -> None:
+    def read_user_input(self) -> str | None:
+        try:
+            return input("You> ")
+        except EOFError:
+            return None
+
+    def task(self, text: str, *, turn_id: int | None = None) -> None:
+        pass
+
+    def llm_step(self, step: int, max_steps: int, *, turn_id: int | None = None) -> None:
         pass
 
     def tool_called(self, name: str, raw_arguments: str) -> None:
@@ -43,9 +66,25 @@ class BaseUI:
     def final_report(self, report: FinalReport) -> None:
         pass
 
+    def turn_report(self, report: TurnReport) -> None:
+        pass
+
+    def session_report(self, report: SessionReport) -> None:
+        pass
+
+    def status_report(self, state: dict[str, Any], *, session_log: str | None) -> None:
+        pass
+
+    def history(self, turns: list[dict[str, object]]) -> None:
+        pass
+
 
 class NullUI(BaseUI):
-    pass
+    def __init__(self, *, assume_yes: bool = False) -> None:
+        self.assume_yes = assume_yes
+
+    def confirm(self, decision: SafetyDecision) -> bool:
+        return self.assume_yes
 
 
 class PlainUI(BaseUI):
@@ -61,11 +100,16 @@ class PlainUI(BaseUI):
         self._print(f"Mini Coding Agent | session={session_id} | model={model or '(unset)'}")
         self._print(f"Workspace: {workspace.resolve()} | max_steps={max_steps}")
 
-    def task(self, text: str) -> None:
-        self._print(f"Task: {text}")
+    def conversation_ready(self) -> None:
+        self._print("Multi-turn mode ready. Enter a request, or use /help for commands.")
 
-    def llm_step(self, step: int, max_steps: int) -> None:
-        self._print(f"\n[step {step}/{max_steps}] Asking model...")
+    def task(self, text: str, *, turn_id: int | None = None) -> None:
+        label = f"Turn {turn_id}" if turn_id is not None else "Task"
+        self._print(f"{label}: {text}")
+
+    def llm_step(self, step: int, max_steps: int, *, turn_id: int | None = None) -> None:
+        prefix = f"turn {turn_id}, " if turn_id is not None else ""
+        self._print(f"\n[{prefix}step {step}/{max_steps}] Asking model...")
 
     def tool_called(self, name: str, raw_arguments: str) -> None:
         preview = raw_arguments if len(raw_arguments) <= 300 else raw_arguments[:300] + "..."
@@ -110,6 +154,43 @@ class PlainUI(BaseUI):
         if report.session_log:
             self._print(f"Session log: {report.session_log}")
 
+    def turn_report(self, report: TurnReport) -> None:
+        self._print(f"\n=== Answer · Turn {report.turn_id} ===")
+        self._print(report.final_text or "(empty response)")
+        state = report.state
+        self._print(
+            f"Turn report: {state.get('llm_calls', 0)} LLM call(s), "
+            f"{state.get('tool_calls', 0)} tool call(s), {state.get('total_tokens', 0)} token(s), "
+            f"{state.get('duration_ms', 0) / 1000:.2f}s"
+        )
+
+    def session_report(self, report: SessionReport) -> None:
+        state = report.state
+        self._print("\n=== Session Summary ===")
+        self._print(
+            f"Turns: {state.get('completed_turns', 0)} | LLM calls: {state.get('llm_calls', 0)} | "
+            f"Tool calls: {state.get('tool_calls', 0)} | Tokens: {state.get('total_tokens', 0)}"
+        )
+        if report.session_log:
+            self._print(f"Session log: {report.session_log}")
+
+    def status_report(self, state: dict[str, Any], *, session_log: str | None) -> None:
+        self._print(
+            f"Session status: {state.get('completed_turns', 0)} completed turn(s), "
+            f"{state.get('llm_calls', 0)} LLM call(s), {state.get('tool_calls', 0)} tool call(s), "
+            f"{state.get('total_tokens', 0)} token(s)."
+        )
+        if session_log:
+            self._print(f"Session log: {session_log}")
+
+    def history(self, turns: list[dict[str, object]]) -> None:
+        if not turns:
+            self._print("No completed turns yet.")
+            return
+        for turn in turns:
+            user_input = str(turn.get("user_input", "")).replace("\n", " ")
+            self._print(f"{turn.get('turn_id')}. [{turn.get('status')}] {user_input[:140]}")
+
 
 class RichUI(BaseUI):
     def __init__(self, *, no_color: bool = False, assume_yes: bool = False) -> None:
@@ -128,16 +209,29 @@ class RichUI(BaseUI):
         table.add_row("Model", model or "(unset)")
         table.add_row("Max steps", str(max_steps))
         table.add_row("Session", session_id)
-        self.console.rule("[bold]Mini Coding Agent v0.3")
+        self.console.rule(f"[bold]Mini Coding Agent v{__version__}")
         self.console.print(table)
 
-    def task(self, text: str) -> None:
+    def conversation_ready(self) -> None:
+        self.console.print("[dim]Multi-turn mode ready. Enter a request, or use /help for commands.[/]")
+
+    def read_user_input(self) -> str | None:
+        from rich.prompt import Prompt
+
+        try:
+            return Prompt.ask("[bold blue]You[/]", console=self.console)
+        except EOFError:
+            return None
+
+    def task(self, text: str, *, turn_id: int | None = None) -> None:
         from rich.panel import Panel
 
-        self.console.print(Panel(text, title="Task", border_style="blue"))
+        title = f"Turn {turn_id}" if turn_id is not None else "Task"
+        self.console.print(Panel(text, title=title, border_style="blue"))
 
-    def llm_step(self, step: int, max_steps: int) -> None:
-        self.console.print(f"\n[bold cyan]Step {step}/{max_steps}[/]  [dim]asking model[/]")
+    def llm_step(self, step: int, max_steps: int, *, turn_id: int | None = None) -> None:
+        turn = f"Turn {turn_id} · " if turn_id is not None else ""
+        self.console.print(f"\n[bold cyan]{turn}Step {step}/{max_steps}[/]  [dim]asking model[/]")
 
     @staticmethod
     def _args_summary(raw_arguments: str) -> str:
@@ -267,3 +361,56 @@ class RichUI(BaseUI):
         if report.session_log:
             table.add_row("Session log", report.session_log)
         self.console.print(table)
+
+    def turn_report(self, report: TurnReport) -> None:
+        from rich.panel import Panel
+        from rich.table import Table
+
+        self.console.print(
+            Panel(report.final_text or "(empty response)", title=f"Answer · Turn {report.turn_id}", border_style="green")
+        )
+        state = report.state
+        table = Table(title=f"Turn {report.turn_id} Report", show_header=False, box=None, padding=(0, 2))
+        changed = state.get("changed_files", [])
+        table.add_row("Changed files", ", ".join(changed) if changed else "(none)")
+        table.add_row("Validation", str(state.get("last_validation") or "(none)"))
+        table.add_row("LLM / tool calls", f"{state.get('llm_calls', 0)} / {state.get('tool_calls', 0)}")
+        table.add_row("Tokens", str(state.get("total_tokens", 0)))
+        table.add_row("Duration", f"{state.get('duration_ms', 0) / 1000:.2f}s")
+        self.console.print(table)
+
+    def session_report(self, report: SessionReport) -> None:
+        from rich.table import Table
+
+        state = report.state
+        table = Table(title="Session Summary", show_header=False, box=None, padding=(0, 2))
+        table.add_row("Completed turns", str(state.get("completed_turns", 0)))
+        table.add_row("Changed files", ", ".join(state.get("changed_files", [])) or "(none)")
+        table.add_row("LLM / tool calls", f"{state.get('llm_calls', 0)} / {state.get('tool_calls', 0)}")
+        table.add_row("Tokens", str(state.get("total_tokens", 0)))
+        table.add_row("Total duration", f"{state.get('duration_ms', 0) / 1000:.2f}s")
+        if report.session_log:
+            table.add_row("Session log", report.session_log)
+        self.console.print(table)
+
+    def status_report(self, state: dict[str, Any], *, session_log: str | None) -> None:
+        from rich.table import Table
+
+        table = Table(title="Current Session", show_header=False, box=None, padding=(0, 2))
+        table.add_row("Completed turns", str(state.get("completed_turns", 0)))
+        table.add_row("LLM / tool calls", f"{state.get('llm_calls', 0)} / {state.get('tool_calls', 0)}")
+        table.add_row("Tokens", str(state.get("total_tokens", 0)))
+        table.add_row("Changed files", ", ".join(state.get("changed_files", [])) or "(none)")
+        if session_log:
+            table.add_row("Session log", session_log)
+        self.console.print(table)
+
+    def history(self, turns: list[dict[str, object]]) -> None:
+        if not turns:
+            self.console.print("[dim]No completed turns yet.[/]")
+            return
+        for turn in turns:
+            user_input = str(turn.get("user_input", "")).replace("\n", " ")
+            self.console.print(
+                f"[cyan]{turn.get('turn_id')}[/]. [{turn.get('status')}] {user_input[:140]}"
+            )

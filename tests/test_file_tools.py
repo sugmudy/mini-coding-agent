@@ -77,3 +77,39 @@ def test_write_file_reports_diff_when_replacing_existing_file(tmp_path):
     assert result["created"] is False
     assert "-old" in result["diff"]
     assert "+new" in result["diff"]
+    assert result["before_sha256"]
+    assert result["sha256"] != result["before_sha256"]
+
+
+def test_read_revision_prevents_lost_update_from_stale_writer(tmp_path):
+    tools = FileTools(tmp_path)
+    path = tmp_path / "shared.txt"
+    path.write_text("version one\n", encoding="utf-8")
+    revision = tools.read_file("shared.txt")["sha256"]
+
+    path.write_text("newer external work\n", encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="ConcurrentModification"):
+        tools.edit_file(
+            "shared.txt",
+            "version one",
+            "stale replacement",
+            expected_sha256=revision,
+        )
+
+    assert path.read_text(encoding="utf-8") == "newer external work\n"
+
+
+def test_missing_revision_makes_new_file_creation_compare_and_swap(tmp_path):
+    tools = FileTools(tmp_path)
+    result = tools.write_file("new.txt", "first\n", expected_sha256=FileTools.MISSING_REVISION)
+    assert result["created"] is True
+
+    with pytest.raises(WorkspaceError, match="ConcurrentModification"):
+        tools.write_file("new.txt", "second\n", expected_sha256=FileTools.MISSING_REVISION)
+
+
+def test_atomic_write_does_not_leave_staging_files(tmp_path):
+    tools = FileTools(tmp_path)
+    tools.write_file("stable.txt", "complete content\n")
+    assert (tmp_path / "stable.txt").read_text(encoding="utf-8") == "complete content\n"
+    assert not list(tmp_path.glob(".stable.txt.*.tmp"))

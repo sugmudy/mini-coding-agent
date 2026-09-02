@@ -28,6 +28,8 @@ A replacement becomes review-level when, for example, a substantial existing fil
 
 `run_command` first tokenizes the command and validates the executable. It never passes the string through `shell=True`.
 
+Git classification parses global options before locating the real subcommand, so forms such as `git -C . push` and `git -c ... commit` cannot bypass policy. Flags are also recognized in both separate and `--flag=value` forms. Unknown Git subcommands fail closed to review instead of being assumed read-only. Python/npm package-manager wrappers and aliases such as `python -m pip install` and `npm i` are classified consistently.
+
 Allowed executables are limited to common development tools such as Python/pytest/pip, Git, Node tooling, Java/C/C++ build tools, Cargo and Go. The command runs with the workspace as its current working directory, captures stdout/stderr, bounds output and enforces a timeout.
 
 ## 5. Risk classification
@@ -91,7 +93,13 @@ Credentials are expected only through local environment configuration. JSONL tra
 
 Redaction is defense-in-depth, not a reason to deliberately put credentials in prompts or source files.
 
-## 8. Threat model and limitations
+## 8. Concurrent file updates
+
+`read_file` returns the SHA-256 revision of the complete file. A caller can pass it to `edit_file` or `write_file` as `expected_sha256`. If another process or worker changed the file after the read, the stale write is rejected. Writes are staged and atomically replaced, so another reader does not observe a half-written file.
+
+This is optimistic concurrency control, not a distributed lock. Callers that omit `expected_sha256` retain backward-compatible last-writer-wins behavior. Multi-agent writers must provide revisions or use isolated worktrees.
+
+## 9. Threat model and limitations
 
 The policy is designed to reduce accidental destructive behavior during local coding tasks. It is **not** a security boundary against malicious source code. A permitted `python`/test/build command can execute project code with the same OS permissions as the user running the agent.
 

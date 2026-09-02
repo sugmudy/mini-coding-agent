@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StudyPulse</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero card">
+        <div>
+          <p class="eyebrow">StudyPulse</p>
+          <h1>学习记录仪表盘</h1>
+          <p class="muted">记录学习时长、完成状态与科目分布。</p>
+        </div>
+        <div class="hero-actions no-print">
+          <button id="printBtn" class="secondary">打印 / 保存 PDF</button>
+        </div>
+      </header>
+
+      <section class="stats">
+        <article class="card stat"><span>总记录数</span><strong id="totalCount">0</strong></article>
+        <article class="card stat"><span>累计学习分钟</span><strong id="totalMinutes">0</strong></article>
+        <article class="card stat"><span>完成率</span><strong id="completionRate">0%</strong></article>
+      </section>
+
+      <section class="card controls no-print">
+        <label>
+          科目筛选
+          <select id="subjectFilter"></select>
+        </label>
+        <form id="recordForm" class="inline-form">
+          <input name="subject" placeholder="例如：数学" required />
+          <input name="minutes" type="number" min="1" max="600" placeholder="分钟" required />
+          <button type="submit">新增记录</button>
+        </form>
+      </section>
+
+      <section id="recordList" class="grid"></section>
+    </main>
+
+    <template id="recordTemplate">
+      <article class="card record">
+        <div class="record-top">
+          <h2 class="subject"></h2>
+          <span class="badge"></span>
+        </div>
+        <p class="minutes"></p>
+        <p class="record-id"></p>
+        <div class="record-actions no-print">
+          <button class="toggle-btn"></button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
